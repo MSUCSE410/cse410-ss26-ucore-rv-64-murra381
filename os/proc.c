@@ -2,6 +2,7 @@
 #include "defs.h"
 #include "loader.h"
 #include "trap.h"
+#include "timer.h"
 
 struct proc pool[NPROC];
 char kstack[NPROC][PAGE_SIZE];
@@ -34,6 +35,16 @@ void proc_init(void)
 		/*
 		* LAB1: you may need to initialize your new fields of proc here
 		*/
+		
+		//initalize syscall counts to 0
+		for (int i = 0; i < MAX_SYSCALL_NUM; i++)
+		{
+			p->syscall_times[i] = 0;
+		}
+		p->start_time = 0;
+		p->total_time = 0;
+		p->born_cycle = 0;
+
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = 0;
@@ -60,14 +71,25 @@ struct proc *allocproc(void)
 	return 0;
 
 found:
-	p->pid = allocpid();
-	p->state = USED;
-	memset(&p->context, 0, sizeof(p->context));
-	memset(p->trapframe, 0, PAGE_SIZE);
-	memset((void *)p->kstack, 0, PAGE_SIZE);
-	p->context.ra = (uint64)usertrapret;
-	p->context.sp = p->kstack + PAGE_SIZE;
-	return p;
+    p->pid = allocpid();
+    p->state = USED;
+
+    // Reset accounting fields for this new process
+    for (int i = 0; i < MAX_SYSCALL_NUM; i++) {
+        p->syscall_times[i] = 0;
+    }
+    p->start_time = 0;
+    p->total_time = 0;
+    p->born_cycle = get_cycle();
+
+    memset(&p->context, 0, sizeof(p->context));
+    memset(p->trapframe, 0, PAGE_SIZE);
+    memset((void *)p->kstack, 0, PAGE_SIZE);
+
+    p->context.ra = (uint64)usertrapret;
+    p->context.sp = p->kstack + PAGE_SIZE;
+    return p;
+
 }
 
 // Scheduler never returns.  It loops, doing:
@@ -84,6 +106,7 @@ void scheduler(void)
 				/*
 				* LAB1: you may need to init proc start time here
 				*/
+				p->start_time = get_cycle(); //task start time
 				p->state = RUNNING;
 				current_proc = p;
 				swtch(&idle.context, &p->context);
@@ -107,19 +130,31 @@ void sched(void)
 	swtch(&p->context, &idle.context);
 }
 
+
+static inline void account_time(struct proc *p)
+{
+    uint64 now = get_cycle();
+    if (p->start_time != 0) {
+        p->total_time += (now - p->start_time);
+        p->start_time = now;
+    }
+}
+
 // Give up the CPU for one scheduling round.
 void yield(void)
 {
-	current_proc->state = RUNNABLE;
-	sched();
+    account_time(curr_proc());
+    current_proc->state = RUNNABLE;
+    sched();
 }
 
 // Exit the current process.
 void exit(int code)
 {
-	struct proc *p = curr_proc();
-	infof("proc %d exit with %d", p->pid, code);
-	p->state = UNUSED;
-	finished();
-	sched();
+    struct proc *p = curr_proc();
+    account_time(p);
+    infof("proc %d exit with %d", p->pid, code);
+    p->state = UNUSED;
+    finished();
+    sched();
 }
