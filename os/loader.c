@@ -6,6 +6,7 @@ static uint64 app_num;
 static uint64 *app_info_ptr;
 extern char _app_num[], ekernel[];
 
+//test
 // Count finished programs. If all apps exited, shutdown.
 int finished()
 {
