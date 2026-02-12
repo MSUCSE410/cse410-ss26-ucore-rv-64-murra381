@@ -46,10 +46,10 @@ uint64 sys_getpid(void)
     return (uint64)curr_proc()->pid;
 }
 
-uint64 sys_task_info(TaskInfo *ti)
+uint64 sys_task_info(TaskInfo *ti) //computes wall clock time since the process is created
 {
-    struct proc *p = curr_proc();
-    uint64 now = get_cycle();
+    struct proc *p = curr_proc(); //return current running process and get current time
+    uint64 now = get_cycle(); 
 
     // Wall-clock elapsed time
     uint64 elapsed_cycles = 0;
@@ -58,13 +58,13 @@ uint64 sys_task_info(TaskInfo *ti)
     }
 
     ti->status = Running;
-    ti->time = (int)(elapsed_cycles / (CPU_FREQ / 1000)); // ms
+    ti->time = (int)(elapsed_cycles / (CPU_FREQ / 1000)); // convert cycles into milliseconds
 
-    for (int i = 0; i < MAX_SYSCALL_NUM; i++) {
+    for (int i = 0; i < MAX_SYSCALL_NUM; i++) { //copy syscall counts to user space
         ti->syscall_times[i] = p->syscall_times[i];
     }
 
-    return 0;
+    return 0; //success
 }
 
 
@@ -83,7 +83,7 @@ void syscall()
 	/*
 	* LAB1: you may need to update syscall counter for task info here
 	*/
-	if (id >= 0 && id < MAX_SYSCALL_NUM) 
+	if (id >= 0 && id < MAX_SYSCALL_NUM) //increment counter for every syscall
 	{
     curr_proc()->syscall_times[id]++;
 	}

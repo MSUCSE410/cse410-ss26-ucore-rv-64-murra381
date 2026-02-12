@@ -42,9 +42,9 @@ struct proc {
 	*/
 	unsigned int syscall_times[MAX_SYSCALL_NUM]; 
     uint64 start_time;    
-    uint64 total_time;
+    uint64 total_time; //tracks cpu time
 
-	uint64 born_cycle;// wall-clock start time in cycles
+	uint64 born_cycle;// wall-clock start time in cycles wall clock = (sleep and yield time) this is true elapsed tim
 	
 };
 
