@@ -1,6 +1,7 @@
 #include "proc.h"
 #include "defs.h"
 #include "loader.h"
+#include "timer.h"
 #include "trap.h"
 #include "vm.h"
 #include "queue.h"
@@ -32,6 +33,14 @@ void proc_init()
 		p->state = UNUSED;
 		p->kstack = (uint64)kstack[p - pool];
 		p->trapframe = (struct trapframe *)trapframe[p - pool];
+		for (int i = 0; i < MAX_SYSCALL_NUM; i++) {
+			p->syscall_times[i] = 0;
+		}
+		p->start_time = 0;
+		p->total_time = 0;
+		p->born_cycle = 0;
+		p->priority = 16;
+		p->stride = 0;
 	}
 	idle.kstack = (uint64)boot_stack_top;
 	idle.pid = IDLE_PID;
@@ -83,6 +92,14 @@ found:
 	p->max_page = 0;
 	p->parent = NULL;
 	p->exit_code = 0;
+	for (int i = 0; i < MAX_SYSCALL_NUM; i++) {
+		p->syscall_times[i] = 0;
+	}
+	p->start_time = 0;
+	p->total_time = 0;
+	p->born_cycle = 0;
+	p->priority = 16;
+	p->stride = 0;
 	p->pagetable = uvmcreate((uint64)p->trapframe);
 	memset(&p->context, 0, sizeof(p->context));
 	memset((void *)p->kstack, 0, KSTACK_SIZE);
@@ -90,6 +107,15 @@ found:
 	p->context.ra = (uint64)usertrapret;
 	p->context.sp = p->kstack + KSTACK_SIZE;
 	return p;
+}
+
+static inline void account_time(struct proc *p)
+{
+	uint64 now = get_cycle();
+	if (p->start_time != 0) {
+		p->total_time += now - p->start_time;
+		p->start_time = now;
+	}
 }
 
 // Scheduler never returns.  It loops, doing:
@@ -119,6 +145,11 @@ void scheduler()
 			panic("all app are over!\n");
 		}
 		tracef("swtich to proc %d", p - pool);
+		if (p->born_cycle == 0) {
+			p->born_cycle = get_cycle();
+		}
+		p->start_time = get_cycle();
+		p->stride += BIG_STRIDE / p->priority;
 		p->state = RUNNING;
 		current_proc = p;
 		swtch(&idle.context, &p->context);
@@ -143,6 +174,7 @@ void sched()
 // Give up the CPU for one scheduling round.
 void yield()
 {
+	account_time(curr_proc());
 	current_proc->state = RUNNABLE;
 	add_task(current_proc);
 	sched();
@@ -162,6 +194,10 @@ void freeproc(struct proc *p)
 	if (p->pagetable)
 		freepagetable(p->pagetable, p->max_page);
 	p->pagetable = 0;
+	p->ustack = 0;
+	p->max_page = 0;
+	p->start_time = 0;
+	p->born_cycle = 0;
 	p->state = UNUSED;
 }
 
@@ -235,6 +271,7 @@ int wait(int pid, int *code)
 void exit(int code)
 {
 	struct proc *p = curr_proc();
+	account_time(p);
 	p->exit_code = code;
 	debugf("proc %d exit with %d\n", p->pid, code);
 	freeproc(p);

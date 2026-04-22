@@ -2,13 +2,9 @@
 #define QUEUE_H
 #define QUEUE_SIZE (1024)
 
-// TODO: change the queue to a priority queue sorted by priority
-
 struct queue {
 	int data[QUEUE_SIZE];
-	int front;
-	int tail;
-	int empty;
+	int size;
 };
 
 void init_queue(struct queue *);

@@ -55,8 +55,7 @@ uint64 sys_gettimeofday(uint64 val, int _tz)
 	TimeVal t;
 	t.sec = cycle / CPU_FREQ;
 	t.usec = (cycle % CPU_FREQ) * 1000000 / CPU_FREQ;
-	copyout(p->pagetable, val, (char *)&t, sizeof(TimeVal));
-	return 0;
+	return copyout(p->pagetable, val, (char *)&t, sizeof(TimeVal));
 }
 
 uint64 sys_getpid()
@@ -85,6 +84,120 @@ uint64 sys_exec(uint64 va)
 	return exec(name);
 }
 
+static TaskStatus proc_to_task_status(enum procstate state)
+{
+	switch (state) {
+	case UNUSED:
+	case USED:
+		return UnInit;
+	case SLEEPING:
+	case RUNNABLE:
+		return Ready;
+	case RUNNING:
+		return Running;
+	case ZOMBIE:
+		return Exited;
+	default:
+		return UnInit;
+	}
+}
+
+uint64 sys_task_info(uint64 va)
+{
+	struct proc *p = curr_proc();
+	TaskInfo ti;
+	uint64 now = get_cycle();
+	uint64 elapsed_cycles = 0;
+
+	if (p->born_cycle != 0 && now >= p->born_cycle) {
+		elapsed_cycles = now - p->born_cycle;
+	}
+
+	ti.status = proc_to_task_status(p->state);
+	ti.time = (int)(elapsed_cycles * 1000 / CPU_FREQ);
+	for (int i = 0; i < MAX_SYSCALL_NUM; i++) {
+		ti.syscall_times[i] = p->syscall_times[i];
+	}
+	return copyout(p->pagetable, va, (char *)&ti, sizeof(ti));
+}
+
+static int page_mapped(pagetable_t pagetable, uint64 va)
+{
+	return walkaddr(pagetable, va) != 0;
+}
+
+uint64 sys_mmap(uint64 start, uint64 len, uint64 port)
+{
+	struct proc *p = curr_proc();
+	uint64 size, end, perm;
+
+	if (!PGALIGNED(start)) {
+		return -1;
+	}
+	if ((port & ~0x7ULL) != 0 || (port & 0x7ULL) == 0) {
+		return -1;
+	}
+	if (len == 0) {
+		return 0;
+	}
+
+	size = PGROUNDUP(len);
+	end = start + size;
+	if (end < start || end > TRAPFRAME) {
+		return -1;
+	}
+	for (uint64 va = start; va < end; va += PAGE_SIZE) {
+		if (page_mapped(p->pagetable, va)) {
+			return -1;
+		}
+	}
+
+	perm = PTE_U | (port << 1);
+	for (uint64 va = start; va < end; va += PAGE_SIZE) {
+		void *page = kalloc();
+		if (page == 0) {
+			return -1;
+		}
+		memset(page, 0, PAGE_SIZE);
+		if (mappages(p->pagetable, va, PAGE_SIZE, (uint64)page, perm) != 0) {
+			kfree(page);
+			return -1;
+		}
+	}
+
+	if (end / PAGE_SIZE > p->max_page) {
+		p->max_page = end / PAGE_SIZE;
+	}
+	return 0;
+}
+
+uint64 sys_munmap(uint64 start, uint64 len)
+{
+	struct proc *p = curr_proc();
+	uint64 size, end;
+
+	if (!PGALIGNED(start)) {
+		return -1;
+	}
+	if (len == 0) {
+		return 0;
+	}
+
+	size = PGROUNDUP(len);
+	end = start + size;
+	if (end < start || end > TRAPFRAME) {
+		return -1;
+	}
+	for (uint64 va = start; va < end; va += PAGE_SIZE) {
+		if (!page_mapped(p->pagetable, va)) {
+			return -1;
+		}
+	}
+
+	uvmunmap(p->pagetable, start, size / PAGE_SIZE, 1);
+	return 0;
+}
+
 uint64 sys_wait(int pid, uint64 va)
 {
 	struct proc *p = curr_proc();
@@ -94,13 +207,38 @@ uint64 sys_wait(int pid, uint64 va)
 
 uint64 sys_spawn(uint64 va)
 {
-	// TODO: your job is to complete the sys call
-	return -1;
+	struct proc *p = curr_proc();
+	struct proc *np;
+	char name[MAX_STR_LEN];
+	int id;
+
+	if (copyinstr(p->pagetable, name, va, MAX_STR_LEN) < 0) {
+		return -1;
+	}
+	id = get_id_by_name(name);
+	if (id < 0) {
+		return -1;
+	}
+	np = allocproc();
+	if (np == NULL) {
+		return -1;
+	}
+	np->parent = p;
+	if (loader(id, np) != 0) {
+		freeproc(np);
+		return -1;
+	}
+	add_task(np);
+	return np->pid;
 }
 
-uint64 sys_set_priority(long long prio){
-    // TODO: your job is to complete the sys call
-    return -1;
+uint64 sys_set_priority(long long prio)
+{
+	if (prio < 2) {
+		return -1;
+	}
+	curr_proc()->priority = prio;
+	return prio;
 }
 
 
@@ -109,11 +247,15 @@ extern char trap_page[];
 void syscall()
 {
 	struct trapframe *trapframe = curr_proc()->trapframe;
-	int id = trapframe->a7, ret;
+	int id = trapframe->a7;
+	uint64 ret;
 	uint64 args[6] = { trapframe->a0, trapframe->a1, trapframe->a2,
 			   trapframe->a3, trapframe->a4, trapframe->a5 };
 	tracef("syscall %d args = [%x, %x, %x, %x, %x, %x]", id, args[0],
 	       args[1], args[2], args[3], args[4], args[5]);
+	if (id >= 0 && id < MAX_SYSCALL_NUM) {
+		curr_proc()->syscall_times[id]++;
+	}
 	switch (id) {
 	case SYS_write:
 		ret = sys_write(args[0], args[1], args[2]);
@@ -136,6 +278,12 @@ void syscall()
 	case SYS_getppid:
 		ret = sys_getppid();
 		break;
+	case SYS_mmap:
+		ret = sys_mmap(args[0], args[1], args[2]);
+		break;
+	case SYS_munmap:
+		ret = sys_munmap(args[0], args[1]);
+		break;
 	case SYS_clone: // SYS_fork
 		ret = sys_clone();
 		break;
@@ -147,6 +295,12 @@ void syscall()
 		break;
 	case SYS_spawn:
 		ret = sys_spawn(args[0]);
+		break;
+	case SYS_setpriority:
+		ret = sys_set_priority(args[0]);
+		break;
+	case SYS_task_info:
+		ret = sys_task_info(args[0]);
 		break;
 	default:
 		ret = -1;

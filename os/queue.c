@@ -1,29 +1,40 @@
 #include "queue.h"
 #include "defs.h"
+#include "proc.h"
 
 void init_queue(struct queue *q)
 {
-	q->front = q->tail = 0;
-	q->empty = 1;
+	q->size = 0;
 }
+
 
 void push_queue(struct queue *q, int value)
 {
-	if (!q->empty && q->front == q->tail) {
+	if (q->size >= NPROC) {
 		panic("queue shouldn't be overflow");
 	}
-	q->empty = 0;
-	q->data[q->tail] = value;
-	q->tail = (q->tail + 1) % NPROC;
+	int pos = q->size;
+	while (pos > 0) {
+		int prev = q->data[pos - 1];
+		if (pool[prev].stride < pool[value].stride ||
+		    (pool[prev].stride == pool[value].stride && prev < value)) {
+			break;
+		}
+		q->data[pos] = prev;
+		pos--;
+	}
+	q->data[pos] = value;
+	q->size++;
 }
 
 int pop_queue(struct queue *q)
 {
-	if (q->empty)
+	if (q->size == 0)
 		return -1;
-	int value = q->data[q->front];
-	q->front = (q->front + 1) % NPROC;
-	if (q->front == q->tail)
-		q->empty = 1;
+	int value = q->data[0];
+	for (int i = 1; i < q->size; i++) {
+		q->data[i - 1] = q->data[i];
+	}
+	q->size--;
 	return value;
 }
